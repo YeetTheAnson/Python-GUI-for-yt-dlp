@@ -39,11 +39,12 @@ class VideoDownloaderApp:
         ttk.Label(frame, text="Resolution:").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
         self.resolution_combobox = ttk.Combobox(frame, state="readonly")
         self.resolution_combobox.grid(row=4, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
-        self.resolution_combobox.bind("<<ComboboxSelected>>", self.update_codecs)
+        self.resolution_combobox.bind("<<ComboboxSelected>>", self.check_download_availability)
 
-        ttk.Label(frame, text="Codec:").grid(row=5, column=0, sticky=tk.W, padx=5, pady=5)
-        self.codec_combobox = ttk.Combobox(frame, state="readonly")
-        self.codec_combobox.grid(row=5, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
+        ttk.Label(frame, text="Audio Sample Rate:").grid(row=5, column=0, sticky=tk.W, padx=5, pady=5)
+        self.audio_combobox = ttk.Combobox(frame, state="readonly")
+        self.audio_combobox.grid(row=5, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
+        self.audio_combobox.bind("<<ComboboxSelected>>", self.check_download_availability)
 
         self.download_button = ttk.Button(frame, text="Download Video", command=self.download_video)
         self.download_button.grid(row=6, column=1, sticky=tk.E, padx=5, pady=5)
@@ -69,11 +70,14 @@ class VideoDownloaderApp:
                 upload_date = datetime.strptime(upload_date, '%Y%m%d').strftime('%d %B %Y')
             self.formats_info = info_dict.get('formats', [])
             
-            file_formats = sorted(set(fmt['ext'] for fmt in self.formats_info))
+            file_formats = sorted(set(fmt.get('ext', 'N/A') for fmt in self.formats_info))
             self.format_combobox['values'] = file_formats
             self.format_combobox.set('')
             self.resolution_combobox.set('')
-            self.codec_combobox.set('')
+            self.audio_combobox.set('')
+
+            audio_sample_rates = sorted(set(str(fmt.get('asr', 'N/A')) for fmt in self.formats_info if fmt.get('acodec') != 'none'))
+            self.audio_combobox['values'] = audio_sample_rates
 
             self.title_var.set(title)
             self.date_var.set(upload_date)
@@ -81,30 +85,32 @@ class VideoDownloaderApp:
     def update_resolutions(self, event):
         selected_format = self.format_combobox.get()
         if not selected_format:
+            self.resolution_combobox['values'] = []
+            self.resolution_combobox.set('')
+            self.check_download_availability(None)
             return
 
-        resolutions = sorted(set(fmt.get('resolution', fmt.get('asr', 'N/A')) 
+        resolutions = sorted(set(fmt.get('resolution', 'N/A') 
                                  for fmt in self.formats_info 
-                                 if fmt['ext'] == selected_format))
+                                 if fmt.get('ext') == selected_format))
         self.resolution_combobox['values'] = resolutions
         self.resolution_combobox.set('')
-        self.codec_combobox.set('')
+        self.check_download_availability(None)
 
-    def update_codecs(self, event):
+    def check_download_availability(self, event):
         selected_format = self.format_combobox.get()
         selected_resolution = self.resolution_combobox.get()
-        if not selected_format or not selected_resolution:
-            return
+        selected_audio_rate = self.audio_combobox.get()
 
-        codecs = sorted(set(f"{fmt.get('acodec', '')}/{fmt.get('vcodec', '')}".strip('/')
-                            for fmt in self.formats_info 
-                            if fmt['ext'] == selected_format and 
-                               (fmt.get('resolution', fmt.get('asr', 'N/A')) == selected_resolution)))
-        self.codec_combobox['values'] = codecs
-        self.codec_combobox.set('')
-
-        if codecs:
-            self.download_button.state(['!disabled'])
+        # Enable the download button only if both format, resolution, and audio sample rate are selected
+        if selected_format and selected_resolution and selected_audio_rate:
+            format_ids = [fmt['format_id'] for fmt in self.formats_info
+                          if fmt.get('ext') == selected_format and 
+                          (fmt.get('resolution') == selected_resolution or fmt.get('asr') == selected_audio_rate)]
+            if format_ids:
+                self.download_button.state(['!disabled'])
+            else:
+                self.download_button.state(['disabled'])
         else:
             self.download_button.state(['disabled'])
 
@@ -112,22 +118,42 @@ class VideoDownloaderApp:
         url = self.url_entry.get()
         selected_format = self.format_combobox.get()
         selected_resolution = self.resolution_combobox.get()
-        selected_codec = self.codec_combobox.get()
+        selected_audio_rate = self.audio_combobox.get()
 
-        if not url or not selected_format or not selected_resolution or not selected_codec:
+        if not url or not selected_format or not selected_resolution or not selected_audio_rate:
             messagebox.showwarning("Input Error", "Please enter a valid URL and select all options.")
             return
 
-        format_id = next((fmt['format_id'] for fmt in self.formats_info
-                          if fmt['ext'] == selected_format and 
-                          (fmt.get('resolution', fmt.get('asr', 'N/A')) == selected_resolution) and 
-                          (f"{fmt.get('acodec', '')}/{fmt.get('vcodec', '')}".strip('/') == selected_codec)), None)
+        video_format_id = next((fmt['format_id'] for fmt in self.formats_info
+                                if fmt.get('ext') == selected_format and 
+                                (fmt.get('resolution') == selected_resolution)), None)
+        
+        audio_format_id = next((fmt['format_id'] for fmt in self.formats_info
+                                if fmt.get('ext') == 'm4a' and 
+                                (fmt.get('asr') == selected_audio_rate)), None)
 
-        if not format_id:
+        if not video_format_id or not audio_format_id:
             messagebox.showerror("Error", "No matching format found.")
             return
 
-        ydl_opts = {'format': format_id}
+        ydl_opts = {
+            'format': video_format_id,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp4',
+                'preferredquality': '192',
+            }, {
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4'
+            }],
+            'postprocessor_args': [
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-strict', 'experimental'
+            ],
+            'outtmpl': '%(title)s.%(ext)s',
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 ydl.download([url])
@@ -135,8 +161,9 @@ class VideoDownloaderApp:
                 messagebox.showerror("Error", str(e))
                 return
 
-        messagebox.showinfo("Success", "Download completed successfully.")
+        messagebox.showinfo("Success", "Download and recombination completed successfully.")
 
+# Setup GUI
 root = tk.Tk()
 app = VideoDownloaderApp(root)
 root.mainloop()
