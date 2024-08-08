@@ -4,6 +4,8 @@ simple GUI for downloading videos using yt-dlp. This GUI allows users to paste v
 
 ## Features
 
+![Demo](Demo.mp4)
+
 - Paste video links
 - Choose the desired video format and resolution
 - Download video to desired location
